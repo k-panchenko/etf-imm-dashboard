@@ -2,6 +2,7 @@ RAWGIT_ROOT = 'https://raw.githubusercontent.com/mobiusfund/etf'
 FIRST_BLOCK = 6706812
 NETUID = 118
 OWNER_UID = 0
+BRN_UID = 165
 
 COLDKEY_BL = 'https://api.app.trustedstake.ai/admin/blacklist'
 INDEX_API = 'https://api.app.trustedstake.ai/admin/indexes'

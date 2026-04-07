@@ -96,15 +96,14 @@ def score2(sc, netuid=NETUID):
     except: return sc
     df.columns = [*df.columns[:-1], 'volume']
 
-    d1 = df[df['type'] == 1].groupby(jj[:-1]).sum().reset_index()
-    d2 = df[df['type'] == 2].groupby(jj[:-1]).sum().reset_index()
+    kk = sc[sc['index'].isna()]['coldkey'].unique()
+    d1 = df[(df['type'] == 1) & df['wallet'].isin(kk)].groupby(jj[:-1]).sum().reset_index()
+    d2 = df[(df['type'] == 2) & df['wallet'].isin(kk)].groupby(jj[:-1]).sum().reset_index()
     print(d1.to_string(index=False))
 
     nn = st.all_subnets()
-    kk = sc[sc['index'].isna()]['coldkey'].unique()
-    kk = [ck for ck in kk if ck in d2['wallet'].unique()]
     d3 = pd.DataFrame(columns=jj)
-    for ck in kk:
+    for ck in d2['wallet'].unique():
         sn = d2[d2['wallet'] == ck]['asset'].unique()
         for s in st.get_stake_info_for_coldkey(ck):
             if s.netuid not in sn: continue
@@ -116,8 +115,8 @@ def score2(sc, netuid=NETUID):
     d2.loc[d2['stake'].isna(), 'stake'] = 0
     print(d2.to_string(index=False))
 
-    d2['volume'] = d2[['volume', 'stake']].min(1)
-    d2 = d2.drop('stake', axis=1)
+    if len(d2): d2['volume'] = d2[['volume', 'stake']].min(1)
+    d2 = d2.drop('stake', axis=1, errors='ignore')
 
     df = pd.concat([d1, d2])
     df = df.groupby(jj[:1]).sum().reset_index().drop(jj[1:-1], axis=1)
@@ -126,7 +125,7 @@ def score2(sc, netuid=NETUID):
     df = sc.join(df.set_index(jj[:1])['total'], 'coldkey')
     df = df.drop(sc.columns[-4:], axis=1).dropna(subset='total')
 
-    dfz = sc['score'].sum() * ratio[1] / ratio[0]
+    dfz = sc['score'].sum() * ratio[2] / ratio[1]
     df['score'] = float('nan')
     if dfz and df['total'].sum():
         df['score'] = dfz * df['total'] / df['total'].sum()
@@ -135,9 +134,12 @@ def score2(sc, netuid=NETUID):
     sc = sc.join(df.set_index('uid')['score'], 'uid', rsuffix='2')
     sc.loc[~sc['score2'].isna(), 'score'] = sc['score2']
     sc = sc.drop('score2', axis=1)
-
     print(df.sort_values('score').to_string(index=False))
     print(f'imm window: {window} days')
+
+    sc.loc[sc['uid'] == BRN_UID, 'score'] = sc['score'].sum() / sum(ratio[1:]) * ratio[0]
+    print('BRN:')
+    print(sc[sc['uid'] == BRN_UID].to_string(index=False))
     print(f'incentive ratio: {ratio}')
     return sc
 
