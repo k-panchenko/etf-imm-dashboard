@@ -18,7 +18,7 @@ _PREFETCH_INTERVAL_SECONDS = 3600
 # Bump when the cached dict shape changes (invalidates stale on-disk cache entries).
 _CACHE_BUNDLE_VERSION = 1
 
-HODL_LOGO_URL = "https://subnet118.com/logo1.png"
+HODL_LOGO_URL = "https://hodl.subnet118.com/_next/image?url=%2Flogo.png&w=128&q=75"
 HODL_EXCHANGE_URL = "https://hodl.subnet118.com"
 HODL_ETF_DASHBOARD_URL = "https://subnet-118-dashboard.vercel.app/"
 DASHBOARD_TITLE = "HODL IMM Miner Dashboard"
