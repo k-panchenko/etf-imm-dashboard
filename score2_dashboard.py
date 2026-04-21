@@ -29,7 +29,7 @@ _TOOLTIP_ALLOC = {
     "hotkey": "Miner hotkey (SS58).",
     "coldkey": "Coldkey (SS58) holding stake.",
     "count": "Number of UIDs on this coldkey; divides per-UID score in validator logic.",
-    "total": "IMM wallet total volume fed into score2 (type-1 + capped type-2 from IMM window).",
+    "total (score)": "IMM wallet total volume fed into score2 (type-1 + capped type-2 from IMM window); this is the score basis before ratio scaling and per-coldkey split.",
     "score2": "IMM incentive weight for this miner after normalizing wallet totals (matches validator score2 path).",
 }
 _TOOLTIP_IMM_WALLET_ROW = {
@@ -116,10 +116,18 @@ def compute_score2_breakdown(sc: pd.DataFrame):
     scored = sc.join(totals.set_index(jj[:1])["total"], "coldkey")
     scored = scored.drop(sc.columns[-4:], axis=1).dropna(subset="total")
 
-    dfz = sc["score"].sum() * ratio[1] / ratio[0]
-    scored["score2"] = float("nan")
-    if dfz and scored["total"].sum():
-        scored["score2"] = dfz * scored["total"] / scored["total"].sum()
+    # Keep this aligned with ETF.core.functions.score2 semantics:
+    # ratio = [brn_weight, score1_weight, score2_weight] (new),
+    # with backward support for legacy 2-value payloads.
+    score1_weight = ratio[1] if len(ratio) > 1 else 0.0
+    score2_weight = ratio[2] if len(ratio) > 2 else (ratio[1] if len(ratio) > 1 else 0.0)
+    scored["score2"] = scored["total"]
+    if not score2_weight:
+        scored["score2"] = 0.0
+    elif score1_weight:
+        dfz = sc["score"].sum() * score2_weight / score1_weight
+        if dfz and scored["score2"].sum():
+            scored["score2"] = dfz * scored["score2"] / scored["score2"].sum()
     scored["score2"] /= scored["count"]
 
     # Full metagraph final score (same merge as ETF.core.functions.score2).
@@ -202,7 +210,7 @@ def render():
     )
     st_ui.markdown(
         f"[HODL Exchange]({HODL_EXCHANGE_URL}) · "
-        f"[HODL ETF Miner Dashboard]({HODL_ETF_DASHBOARD_URL})"
+        f"[HODL ETF Miner Dashboard (Deprecated)]({HODL_ETF_DASHBOARD_URL})"
     )
     st_ui.caption(
         "IMM volume → capped type-2 → wallet totals → score2 splits; "
@@ -236,6 +244,8 @@ def render():
     alloc = (
         data["scored_rows"]
         .sort_values(["score2", "uid"], ascending=[False, True], na_position="last")
+        .drop(columns=["score", "score2"], errors="ignore")
+        .rename(columns={"total": "total (score)"})
         .drop(columns=["index"], errors="ignore")
         .reset_index(drop=True)
     )
