@@ -67,8 +67,11 @@ def score1(netuid=NETUID):
     ic = [len(sc[sc['index'] == i]) for i in range(len(INDEX_IDS))]
 
     sc['balance'] = sc['balance'].round(2)
-    sc.loc[sc['score'].isna(), 'score'] = 0
+    sc.loc[sc['score'].isna(), 'score'] = 0.0
     #if not sc['score'].sum(): sc.loc[sc['uid'] == OWNER_UID, 'score'] = 1
+    try: ratio = json.loads(requests.get(IMM_RATIO).json())
+    except: ratio = [1.0, 0.0, 0.0]
+    if not ratio[1]: sc['score'] = 0.0
 
     for j in 'index', 'block', 'days':
         sc[j] = sc[j].astype(object)
@@ -112,7 +115,7 @@ def score2(sc, netuid=NETUID):
 
     d2 = d2.join(d3.set_index(jj[:-1])['tao'], jj[:-1])
     d2.columns = [*d2.columns[:-1], 'stake']
-    d2.loc[d2['stake'].isna(), 'stake'] = 0
+    d2.loc[d2['stake'].isna(), 'stake'] = 0.0
     print(d2.to_string(index=False))
 
     if len(d2): d2['volume'] = d2[['volume', 'stake']].min(1)
@@ -124,11 +127,14 @@ def score2(sc, netuid=NETUID):
 
     df = sc.join(df.set_index(jj[:1])['total'], 'coldkey')
     df = df.drop(sc.columns[-4:], axis=1).dropna(subset='total')
+    df['score'] = df['total']
 
-    dfz = sc['score'].sum() * ratio[2] / ratio[1]
-    df['score'] = float('nan')
-    if dfz and df['total'].sum():
-        df['score'] = dfz * df['total'] / df['total'].sum()
+    if not ratio[1]: sc['score'] = 0.0
+    if not ratio[2]: df['score'] = 0.0
+    if ratio[1] and ratio[2]:
+        dfz = sc['score'].sum() * ratio[2] / ratio[1]
+        if dfz and df['score'].sum():
+            df['score'] = dfz * df['score'] / df['score'].sum()
     df['score'] /= df['count']
 
     sc = sc.join(df.set_index('uid')['score'], 'uid', rsuffix='2')
@@ -137,7 +143,7 @@ def score2(sc, netuid=NETUID):
     print(df.sort_values('score').to_string(index=False))
     print(f'imm window: {window} days')
 
-    sc.loc[sc['uid'] == BRN_UID, 'score'] = sc['score'].sum() / sum(ratio[1:]) * ratio[0]
+    sc.loc[sc['uid'] == BRN_UID, 'score'] = sc['score'].sum() / sum(ratio[1:]) * ratio[0] if sum(ratio[1:]) else 1.0
     print('BRN:')
     print(sc[sc['uid'] == BRN_UID].to_string(index=False))
     print(f'incentive ratio: {ratio}')
