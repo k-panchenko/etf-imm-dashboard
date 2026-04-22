@@ -66,6 +66,17 @@ def dtms(days: int = 0) -> str:
     return (datetime.utcnow() + timedelta(days=days)).isoformat(" ", "milliseconds")
 
 
+def _filter_alloc_rows_by_key(df: pd.DataFrame, query: str) -> pd.DataFrame:
+    """Filter score rows by coldkey/hotkey substring (case-insensitive)."""
+    q = (query or "").strip().lower()
+    if not q:
+        return df
+    cold = df["coldkey"].astype(str).str.lower().str.contains(q, na=False) if "coldkey" in df.columns else False
+    hot = df["hotkey"].astype(str).str.lower().str.contains(q, na=False) if "hotkey" in df.columns else False
+    mask = cold | hot
+    return df[mask].copy()
+
+
 def _load_imm_inputs():
     ratio = json.loads(requests.get(IMM_RATIO, timeout=30).json())
     window = json.loads(requests.get(IMM_WINDOW, timeout=30).json())
@@ -236,13 +247,22 @@ def render():
     c2.metric("Incentive ratio", str(data["ratio"]))
     c3.metric("IMM date key", data["date"])
 
+    key_filter = st_ui.text_input(
+        "Filter all tables by coldkey or hotkey",
+        value="",
+        placeholder="Paste full or partial coldkey/hotkey",
+    )
+
     rank_by_uid = data.get("rank_by_uid")
     if rank_by_uid is None:
         mf = data.get("metagraph_final")
         rank_by_uid = _rank_by_uid_from_metagraph(mf) if mf is not None else pd.Series(dtype="int64")
 
+    filtered_scored_rows = _filter_alloc_rows_by_key(data["scored_rows"], key_filter)
+    filtered_coldkeys = set(filtered_scored_rows["coldkey"].astype(str).unique())
+
     alloc = (
-        data["scored_rows"]
+        filtered_scored_rows
         .sort_values(["score2", "uid"], ascending=[False, True], na_position="last")
         .drop(columns=["score", "score2"], errors="ignore")
         .rename(columns={"total": "total (score)"})
@@ -250,6 +270,8 @@ def render():
         .reset_index(drop=True)
     )
     alloc.insert(0, "rank", alloc["uid"].map(rank_by_uid))
+    if key_filter.strip():
+        st_ui.caption(f"Filter active: `{key_filter.strip()}` · matching rows: {len(alloc)}")
     st_ui.subheader("score2 allocations")
     st_ui.dataframe(
         alloc,
@@ -261,6 +283,8 @@ def render():
     with st_ui.expander("IMM pipeline (intermediate tables)", expanded=False):
         st_ui.markdown("`type=2` raw volume")
         d2r = data["d2_type2_raw"]
+        if key_filter.strip() and "wallet" in d2r.columns:
+            d2r = d2r[d2r["wallet"].astype(str).isin(filtered_coldkeys)]
         st_ui.dataframe(
             d2r,
             use_container_width=True,
@@ -269,6 +293,8 @@ def render():
         )
         st_ui.markdown("On-chain stake used for capping")
         d3 = data["d3_chain_stake"]
+        if key_filter.strip() and "wallet" in d3.columns:
+            d3 = d3[d3["wallet"].astype(str).isin(filtered_coldkeys)]
         st_ui.dataframe(
             d3,
             use_container_width=True,
@@ -283,6 +309,8 @@ def render():
         )
         st_ui.markdown("`type=2` after min(volume, stake)")
         d2c = data["d2_type2_capped"]
+        if key_filter.strip() and "wallet" in d2c.columns:
+            d2c = d2c[d2c["wallet"].astype(str).isin(filtered_coldkeys)]
         st_ui.dataframe(
             d2c,
             use_container_width=True,
@@ -297,6 +325,8 @@ def render():
         )
         st_ui.markdown("Per-wallet totals → score2 denominator (validator: type-1 + capped type-2)")
         wt = data["wallet_totals"]
+        if key_filter.strip() and "wallet" in wt.columns:
+            wt = wt[wt["wallet"].astype(str).isin(filtered_coldkeys)]
         st_ui.dataframe(
             wt,
             use_container_width=True,
@@ -304,6 +334,8 @@ def render():
             column_config=_column_config_for_df(wt, _TOOLTIP_WALLET_TOTALS),
         )
         raw2 = data["raw"][data["raw"]["type"] == 2]
+        if key_filter.strip() and "wallet" in raw2.columns:
+            raw2 = raw2[raw2["wallet"].astype(str).isin(filtered_coldkeys)]
         st_ui.markdown("Raw IMM rows (`type=2` only)")
         st_ui.dataframe(
             raw2,
