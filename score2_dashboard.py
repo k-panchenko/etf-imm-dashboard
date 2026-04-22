@@ -8,20 +8,35 @@ import pandas as pd
 import requests
 import streamlit as st_ui
 
-from ETF.core.constants import IMM_DATA, IMM_RATIO, IMM_WINDOW, NETUID
-from ETF.core.functions import score1, st as subtensor
+from ETF.core.constants import (
+    DASHBOARD_CACHE_BUNDLE_VERSION,
+    DASHBOARD_CACHE_TTL_SECONDS,
+    DASHBOARD_HODL_EXCHANGE_URL,
+    DASHBOARD_HODL_LOGO_URL,
+    DASHBOARD_PREFETCH_INTERVAL_SECONDS,
+    DASHBOARD_TITLE,
+    IMM_DATA,
+    IMM_RATIO,
+    IMM_WINDOW,
+    NETUID,
+    EPOCHES_IN_DAY,
+)
+from ETF.core.functions import (
+    _get_all_subnets_cached,
+    _get_metagraph_cached,
+    _get_stake_info_for_coldkeys_cached,
+    score1,
+)
 
 # Server-wide cache: same Streamlit process shares entries for all browser sessions.
 # Multiple app replicas (e.g. K8s) each have their own cache unless you add Redis/DB.
-_CACHE_TTL_SECONDS = 300
-_PREFETCH_INTERVAL_SECONDS = 300
+_CACHE_TTL_SECONDS = DASHBOARD_CACHE_TTL_SECONDS
+_PREFETCH_INTERVAL_SECONDS = DASHBOARD_PREFETCH_INTERVAL_SECONDS
 # Bump when the cached dict shape changes (invalidates stale on-disk cache entries).
-_CACHE_BUNDLE_VERSION = 1
+_CACHE_BUNDLE_VERSION = DASHBOARD_CACHE_BUNDLE_VERSION
 
-HODL_LOGO_URL = "https://hodl.subnet118.com/_next/image?url=%2Flogo.png&w=128&q=75"
-HODL_EXCHANGE_URL = "https://hodl.subnet118.com"
-HODL_ETF_DASHBOARD_URL = "https://subnet-118-dashboard.vercel.app/"
-DASHBOARD_TITLE = "HODL IMM Miner Dashboard"
+HODL_LOGO_URL = DASHBOARD_HODL_LOGO_URL
+HODL_EXCHANGE_URL = DASHBOARD_HODL_EXCHANGE_URL
 
 _TOOLTIP_ALLOC = {
     "rank": "Global rank among all miners by final blended score (metagraph score with simple score overriding where IMM applies). Lower number is higher rank.",
@@ -29,6 +44,7 @@ _TOOLTIP_ALLOC = {
     "hotkey": "Miner hotkey (SS58).",
     "coldkey": "Coldkey (SS58) holding stake.",
     "count": "Number of UIDs on this coldkey; divides per-UID score in validator logic.",
+    "daily_reward": "Current miner daily reward from subnet metagraph (emission * EPOCHES_IN_DAY) in selected currency.",
     "total (score)": "IMM wallet total volume fed into simple score (type-1 + capped type-2 from IMM window); this is the score basis before ratio scaling and per-coldkey split.",
     "score": "Simple score incentive weight for this miner after normalizing wallet totals (matches validator simple score path).",
 }
@@ -41,6 +57,18 @@ _TOOLTIP_WALLET_TOTALS = {
     "wallet": "Coldkey (SS58).",
     "total": "Per-wallet IMM total (type-1 + min(type-2 volume, on-chain stake cap)); used as simple score numerator input.",
 }
+_TOOLTIP_INCENTIVE_RATIO = (
+    "How to read this: [burn, ETF, IMM]."
+    "Example: [0.8, 0.0, 0.2] means 80% burn, 0% ETF miners (deprecated), and 20% IMM miners."
+)
+_TOOLTIP_IMM_WINDOW = (
+    "Number of past days included in IMM data. "
+    "Example: 7 means volumes from the last 7 days are used."
+)
+_TOOLTIP_IMM_DATE_KEY = (
+    "IMM snapshot key generated from the window. "
+    "It is the timestamp used to request IMM data for this run."
+)
 
 
 def _column_config_for_df(df: pd.DataFrame, help_by_col: dict[str, str]) -> dict:
@@ -87,6 +115,18 @@ def _load_imm_inputs():
     return ratio, window, date, base
 
 
+@st_ui.cache_data(ttl=_CACHE_TTL_SECONDS)
+def _get_tao_usd_price() -> float | None:
+    try:
+        data = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=bittensor&vs_currencies=usd",
+            timeout=10,
+        ).json()
+        return float(data["bittensor"]["usd"])
+    except Exception:
+        return None
+
+
 def compute_score2_breakdown(sc: pd.DataFrame):
     jj = ["wallet", "asset", "type", "volume"]
     ratio, window, date, base = _load_imm_inputs()
@@ -94,13 +134,14 @@ def compute_score2_breakdown(sc: pd.DataFrame):
     d1 = base[base["type"] == 1].groupby(jj[:-1]).sum().reset_index()
     d2 = base[base["type"] == 2].groupby(jj[:-1]).sum().reset_index()
 
-    nn = subtensor.all_subnets()
+    nn = _get_all_subnets_cached()
     kk = sc[sc["index"].isna()]["coldkey"].unique()
     kk = [ck for ck in kk if ck in d2["wallet"].unique()]
     d3 = pd.DataFrame(columns=jj)
+    stake_info_by_ck = _get_stake_info_for_coldkeys_cached(kk)
     for ck in kk:
         sn = d2[d2["wallet"] == ck]["asset"].unique()
-        for stake_info in subtensor.get_stake_info_for_coldkey(ck):
+        for stake_info in stake_info_by_ck.get(ck, []):
             if stake_info.netuid not in sn:
                 continue
             d3.loc[len(d3)] = (
@@ -146,6 +187,10 @@ def compute_score2_breakdown(sc: pd.DataFrame):
     metagraph_final = metagraph_final.drop(columns=["score2"])
 
     rank_by_uid = _rank_by_uid_from_metagraph(metagraph_final)
+    mg = _get_metagraph_cached(NETUID)
+    subnet_price = float(nn[NETUID].price)
+    emission_by_uid = {uid: float(em) * EPOCHES_IN_DAY for uid, em in enumerate(mg.emission)}
+    scored["daily_reward"] = scored["uid"].map(emission_by_uid)
 
     return {
         "ratio": ratio,
@@ -157,6 +202,7 @@ def compute_score2_breakdown(sc: pd.DataFrame):
         "d2_type2_capped": d2_capped,
         "wallet_totals": totals,
         "scored_rows": scored,
+        "subnet_price_tao": subnet_price,
         "metagraph_final": metagraph_final,
         "rank_by_uid": rank_by_uid,
     }
@@ -208,7 +254,11 @@ def _start_score2_prefetch(netuid: int) -> threading.Thread:
 
 
 def render():
-    st_ui.set_page_config(page_title=DASHBOARD_TITLE, layout="wide")
+    st_ui.set_page_config(
+        page_title=DASHBOARD_TITLE,
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
     _start_score2_prefetch(NETUID)
 
     st_ui.markdown(
@@ -241,14 +291,26 @@ def render():
     )
 
     c1, c2, c3 = st_ui.columns(3)
-    c1.metric("IMM window (days)", data["window"])
-    c2.metric("Incentive ratio", str(data["ratio"]))
-    c3.metric("IMM date key", data["date"])
+    c1.metric("IMM window (days)", data["window"], help=_TOOLTIP_IMM_WINDOW)
+    c2.metric("Incentive ratio", str(data["ratio"]), help=_TOOLTIP_INCENTIVE_RATIO)
+    c3.metric("IMM date key", data["date"], help=_TOOLTIP_IMM_DATE_KEY)
 
     key_filter = st_ui.text_input(
         "Filter all tables by coldkey or hotkey",
         value="",
         placeholder="Paste full or partial coldkey/hotkey",
+    )
+    alpha_symbol = str(_get_all_subnets_cached()[NETUID].symbol)
+    currency_options = ["alpha", "tao", "dollar"]
+    currency_labels = {"alpha": alpha_symbol, "tao": "τ", "dollar": "$"}
+    if "daily_reward_currency" not in st_ui.session_state:
+        st_ui.session_state["daily_reward_currency"] = "alpha"
+    selected_currency = st_ui.sidebar.selectbox(
+        "Daily reward currency",
+        currency_options,
+        index=currency_options.index(st_ui.session_state["daily_reward_currency"]),
+        format_func=lambda x: currency_labels.get(x, x),
+        key="daily_reward_currency",
     )
 
     rank_by_uid = data.get("rank_by_uid")
@@ -256,8 +318,29 @@ def render():
         mf = data.get("metagraph_final")
         rank_by_uid = _rank_by_uid_from_metagraph(mf) if mf is not None else pd.Series(dtype="int64")
 
-    filtered_scored_rows = _filter_alloc_rows_by_key(data["scored_rows"], key_filter)
+    filtered_scored_rows = _filter_alloc_rows_by_key(data["scored_rows"], key_filter).copy()
     filtered_coldkeys = set(filtered_scored_rows["coldkey"].astype(str).unique())
+    tao_usd = _get_tao_usd_price()
+    tao_multiplier = float(data.get("subnet_price_tao", 1.0))
+    usd_multiplier = float(tao_usd) if tao_usd is not None else 1.0
+    reward_prefix_by_currency = {
+        "alpha": f"{alpha_symbol} ",
+        "tao": "τ ",
+        "dollar": "$ ",
+    }
+    reward_multiplier_by_currency = {
+        "alpha": 1.0,
+        "tao": tao_multiplier,
+        "dollar": tao_multiplier * usd_multiplier,
+    }
+    reward_prefix = reward_prefix_by_currency.get(selected_currency, f"{alpha_symbol} ")
+    filtered_scored_rows["daily_reward"] = (
+        filtered_scored_rows["daily_reward"]
+        * reward_multiplier_by_currency.get(selected_currency, 1.0)
+    )
+    filtered_scored_rows["daily_reward"] = (
+        filtered_scored_rows["daily_reward"].round(2).map(lambda v: f"{reward_prefix}{v}")
+    )
 
     alloc = (
         filtered_scored_rows

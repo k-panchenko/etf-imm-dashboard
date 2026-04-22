@@ -6,7 +6,63 @@ import bittensor as bt
 import pandas as pd
 from .constants import *
 st = bt.Subtensor('finney')
-BATCH_SIZE = 63 # 64 vector size is too large for Bittensor
+_SUBTENSOR_CACHE = {
+    'all_subnets': {'ts': 0.0, 'value': None},
+    'metagraph_by_netuid': {},
+    'stake_info_by_coldkey': {},
+}
+
+
+def _now_ts():
+    return datetime.datetime.utcnow().timestamp()
+
+
+def _get_all_subnets_cached():
+    now = _now_ts()
+    entry = _SUBTENSOR_CACHE['all_subnets']
+    if entry['value'] is not None and now - entry['ts'] < SUBTENSOR_CACHE_TTL_SECONDS:
+        return entry['value']
+    value = st.all_subnets()
+    _SUBTENSOR_CACHE['all_subnets'] = {'ts': now, 'value': value}
+    return value
+
+
+def _get_metagraph_cached(netuid):
+    now = _now_ts()
+    cache = _SUBTENSOR_CACHE['metagraph_by_netuid']
+    entry = cache.get(netuid)
+    if entry is not None and now - entry['ts'] < SUBTENSOR_CACHE_TTL_SECONDS:
+        return entry['value']
+    value = st.get_metagraph_info(netuid)
+    cache[netuid] = {'ts': now, 'value': value}
+    return value
+
+
+def _get_stake_info_for_coldkeys_cached(coldkeys):
+    now = _now_ts()
+    coldkeys = list(dict.fromkeys(coldkeys))
+    cache = _SUBTENSOR_CACHE['stake_info_by_coldkey']
+    out, missing = {}, []
+
+    for ck in coldkeys:
+        entry = cache.get(ck)
+        if entry is not None and now - entry['ts'] < SUBTENSOR_CACHE_TTL_SECONDS:
+            out[ck] = entry['value']
+        else:
+            missing.append(ck)
+
+    for i in range(0, len(missing), BATCH_SIZE):
+        chunk = missing[i:i + BATCH_SIZE]
+        try:
+            fetched = st.get_stake_info_for_coldkeys(chunk)
+        except Exception:
+            fetched = {ck: st.get_stake_info_for_coldkey(ck) for ck in chunk}
+        for ck in chunk:
+            value = fetched.get(ck, [])
+            cache[ck] = {'ts': now, 'value': value}
+            out[ck] = value
+
+    return out
 
 def update():
     init = 'ETF/__init__.py'
@@ -35,22 +91,14 @@ def score1(netuid=NETUID):
     while not bk:
         try: bk = st.block
         except: st, bk = bt.Subtensor('finney'), 0
-    mg = st.get_metagraph_info(netuid)
-    nn = st.all_subnets()
+    mg = _get_metagraph_cached(netuid)
+    nn = _get_all_subnets_cached()
 
     def scoring(bal, blk):
         return bal ** GAMMA * (1 + KAPPA * math.log(1 + min((mg.block - blk) / 7200, DMAX) / DNORM)) if mg.block > blk else float('nan')
 
     coldkeys = list(set(mg.coldkeys))
-    stake_info_by_ck = {}
-    for i in range(0, len(coldkeys), BATCH_SIZE):
-        chunk = coldkeys[i:i + BATCH_SIZE]
-        try:
-            stake_info_by_ck.update(st.get_stake_info_for_coldkeys(chunk))
-        except Exception:
-            # Fallback keeps old behavior if a chunk fails transiently.
-            for ck in chunk:
-                stake_info_by_ck[ck] = st.get_stake_info_for_coldkey(ck)
+    stake_info_by_ck = _get_stake_info_for_coldkeys_cached(coldkeys)
     for ck in coldkeys:
         ckbal[ck] = sum([float(s.stake) * float(nn[s.netuid].price) for s in stake_info_by_ck.get(ck, []) if s.netuid])
     for i in range(mg.num_uids):
@@ -113,17 +161,10 @@ def score2(sc, netuid=NETUID):
     d2 = df[(df['type'] == 2) & df['wallet'].isin(kk)].groupby(jj[:-1]).sum().reset_index()
     print(d1.to_string(index=False))
 
-    nn = st.all_subnets()
+    nn = _get_all_subnets_cached()
     d3 = pd.DataFrame(columns=jj)
     coldkeys = list(d2['wallet'].unique())
-    stake_info_by_ck = {}
-    for i in range(0, len(coldkeys), BATCH_SIZE):
-        chunk = coldkeys[i:i + BATCH_SIZE]
-        try:
-            stake_info_by_ck.update(st.get_stake_info_for_coldkeys(chunk))
-        except Exception:
-            for ck in chunk:
-                stake_info_by_ck[ck] = st.get_stake_info_for_coldkey(ck)
+    stake_info_by_ck = _get_stake_info_for_coldkeys_cached(coldkeys)
     for ck in coldkeys:
         sn = d2[d2['wallet'] == ck]['asset'].unique()
         for s in stake_info_by_ck.get(ck, []):

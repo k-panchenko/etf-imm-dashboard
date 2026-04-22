@@ -30,3 +30,16 @@ DMAX = 36500
 IMM_DATA = 'https://api.subnet118.com/imm/data'
 IMM_WINDOW = 'https://api.subnet118.com/imm/window'
 IMM_RATIO = 'https://api.subnet118.com/imm/ratio'
+
+# Subtensor request/cache tuning.
+BATCH_SIZE = 63  # 64 vector size is too large for Bittensor
+SUBTENSOR_CACHE_TTL_SECONDS = 240  # keep below 5-minute dashboard refresh window
+EPOCHES_IN_DAY = 20
+
+# Dashboard config.
+DASHBOARD_CACHE_TTL_SECONDS = 300
+DASHBOARD_PREFETCH_INTERVAL_SECONDS = 300
+DASHBOARD_CACHE_BUNDLE_VERSION = 1
+DASHBOARD_HODL_LOGO_URL = 'https://hodl.subnet118.com/_next/image?url=%2Flogo.png&w=128&q=75'
+DASHBOARD_HODL_EXCHANGE_URL = 'https://hodl.subnet118.com'
+DASHBOARD_TITLE = 'HODL IMM Miner Dashboard'
