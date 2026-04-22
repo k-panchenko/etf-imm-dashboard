@@ -6,6 +6,7 @@ import bittensor as bt
 import pandas as pd
 from .constants import *
 st = bt.Subtensor('finney')
+BATCH_SIZE = 63 # 64 vector size is too large for Bittensor
 
 def update():
     init = 'ETF/__init__.py'
@@ -40,10 +41,18 @@ def score1(netuid=NETUID):
     def scoring(bal, blk):
         return bal ** GAMMA * (1 + KAPPA * math.log(1 + min((mg.block - blk) / 7200, DMAX) / DNORM)) if mg.block > blk else float('nan')
 
-    def balance(ck):
-        return sum([float(s.stake) * float(nn[s.netuid].price) for s in st.get_stake_info_for_coldkey(ck) if s.netuid])
-
-    for ck in set(mg.coldkeys): ckbal[ck] = balance(ck)
+    coldkeys = list(set(mg.coldkeys))
+    stake_info_by_ck = {}
+    for i in range(0, len(coldkeys), BATCH_SIZE):
+        chunk = coldkeys[i:i + BATCH_SIZE]
+        try:
+            stake_info_by_ck.update(st.get_stake_info_for_coldkeys(chunk))
+        except Exception:
+            # Fallback keeps old behavior if a chunk fails transiently.
+            for ck in chunk:
+                stake_info_by_ck[ck] = st.get_stake_info_for_coldkey(ck)
+    for ck in coldkeys:
+        ckbal[ck] = sum([float(s.stake) * float(nn[s.netuid].price) for s in stake_info_by_ck.get(ck, []) if s.netuid])
     for i in range(mg.num_uids):
         hk, ck = mg.hotkeys[i], mg.coldkeys[i]
         try:
@@ -106,9 +115,18 @@ def score2(sc, netuid=NETUID):
 
     nn = st.all_subnets()
     d3 = pd.DataFrame(columns=jj)
-    for ck in d2['wallet'].unique():
+    coldkeys = list(d2['wallet'].unique())
+    stake_info_by_ck = {}
+    for i in range(0, len(coldkeys), BATCH_SIZE):
+        chunk = coldkeys[i:i + BATCH_SIZE]
+        try:
+            stake_info_by_ck.update(st.get_stake_info_for_coldkeys(chunk))
+        except Exception:
+            for ck in chunk:
+                stake_info_by_ck[ck] = st.get_stake_info_for_coldkey(ck)
+    for ck in coldkeys:
         sn = d2[d2['wallet'] == ck]['asset'].unique()
-        for s in st.get_stake_info_for_coldkey(ck):
+        for s in stake_info_by_ck.get(ck, []):
             if s.netuid not in sn: continue
             d3.loc[len(d3)] = ck, s.netuid, 2, float(s.stake) * float(nn[s.netuid].price)
     d3 = d3.groupby(jj[:-1]).sum().reset_index()

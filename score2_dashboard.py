@@ -13,8 +13,8 @@ from ETF.core.functions import score1, st as subtensor
 
 # Server-wide cache: same Streamlit process shares entries for all browser sessions.
 # Multiple app replicas (e.g. K8s) each have their own cache unless you add Redis/DB.
-_CACHE_TTL_SECONDS = 3600
-_PREFETCH_INTERVAL_SECONDS = 3600
+_CACHE_TTL_SECONDS = 300
+_PREFETCH_INTERVAL_SECONDS = 300
 # Bump when the cached dict shape changes (invalidates stale on-disk cache entries).
 _CACHE_BUNDLE_VERSION = 1
 
@@ -24,23 +24,22 @@ HODL_ETF_DASHBOARD_URL = "https://subnet-118-dashboard.vercel.app/"
 DASHBOARD_TITLE = "HODL IMM Miner Dashboard"
 
 _TOOLTIP_ALLOC = {
-    "rank": "Global rank among all miners by final blended score (metagraph score with score2 overriding where IMM applies). Lower number is higher rank.",
+    "rank": "Global rank among all miners by final blended score (metagraph score with simple score overriding where IMM applies). Lower number is higher rank.",
     "uid": "Miner UID on subnet.",
     "hotkey": "Miner hotkey (SS58).",
     "coldkey": "Coldkey (SS58) holding stake.",
     "count": "Number of UIDs on this coldkey; divides per-UID score in validator logic.",
-    "total (score)": "IMM wallet total volume fed into score2 (type-1 + capped type-2 from IMM window); this is the score basis before ratio scaling and per-coldkey split.",
-    "score2": "IMM incentive weight for this miner after normalizing wallet totals (matches validator score2 path).",
+    "total (score)": "IMM wallet total volume fed into simple score (type-1 + capped type-2 from IMM window); this is the score basis before ratio scaling and per-coldkey split.",
+    "score": "Simple score incentive weight for this miner after normalizing wallet totals (matches validator simple score path).",
 }
 _TOOLTIP_IMM_WALLET_ROW = {
     "wallet": "Coldkey (SS58) from IMM.",
     "asset": "Subnet netuid IMM attributes this row to.",
-    "type": "IMM event type from API (1 and 2 are aggregated differently in the validator).",
     "volume": "Summed IMM volume for this wallet/asset/type (TAO-equivalent per IMM feed).",
 }
 _TOOLTIP_WALLET_TOTALS = {
     "wallet": "Coldkey (SS58).",
-    "total": "Per-wallet IMM total (type-1 + min(type-2 volume, on-chain stake cap)); used as score2 numerator input.",
+    "total": "Per-wallet IMM total (type-1 + min(type-2 volume, on-chain stake cap)); used as simple score numerator input.",
 }
 
 
@@ -220,11 +219,10 @@ def render():
         unsafe_allow_html=True,
     )
     st_ui.markdown(
-        f"[HODL Exchange]({HODL_EXCHANGE_URL}) · "
-        f"[HODL ETF Miner Dashboard (Deprecated)]({HODL_ETF_DASHBOARD_URL})"
+        f"[HODL Exchange]({HODL_EXCHANGE_URL})"
     )
     st_ui.caption(
-        "IMM volume → capped type-2 → wallet totals → score2 splits; "
+        "IMM volume → capped type-2 → wallet totals → simple score splits; "
         f"subnet {NETUID} metagraph matches ETF/core/functions.py."
     )
 
@@ -264,7 +262,8 @@ def render():
     alloc = (
         filtered_scored_rows
         .sort_values(["score2", "uid"], ascending=[False, True], na_position="last")
-        .drop(columns=["score", "score2"], errors="ignore")
+        .drop(columns=["score"], errors="ignore")
+        .rename(columns={"score2": "score"})
         .rename(columns={"total": "total (score)"})
         .drop(columns=["index"], errors="ignore")
         .reset_index(drop=True)
@@ -272,7 +271,7 @@ def render():
     alloc.insert(0, "rank", alloc["uid"].map(rank_by_uid))
     if key_filter.strip():
         st_ui.caption(f"Filter active: `{key_filter.strip()}` · matching rows: {len(alloc)}")
-    st_ui.subheader("score2 allocations")
+    st_ui.subheader("score allocations")
     st_ui.dataframe(
         alloc,
         use_container_width=True,
@@ -281,20 +280,22 @@ def render():
     )
 
     with st_ui.expander("IMM pipeline (intermediate tables)", expanded=False):
-        st_ui.markdown("`type=2` raw volume")
+        st_ui.markdown("Step 1 - IMM mined volume by wallet and subnet (raw, simple-score-eligible events)")
         d2r = data["d2_type2_raw"]
         if key_filter.strip() and "wallet" in d2r.columns:
             d2r = d2r[d2r["wallet"].astype(str).isin(filtered_coldkeys)]
+        d2r = d2r.drop(columns=["type"], errors="ignore")
         st_ui.dataframe(
             d2r,
             use_container_width=True,
             hide_index=True,
             column_config=_column_config_for_df(d2r, _TOOLTIP_IMM_WALLET_ROW),
         )
-        st_ui.markdown("On-chain stake used for capping")
+        st_ui.markdown("Step 2 - On-chain stake snapshot per wallet/subnet used as the cap")
         d3 = data["d3_chain_stake"]
         if key_filter.strip() and "wallet" in d3.columns:
             d3 = d3[d3["wallet"].astype(str).isin(filtered_coldkeys)]
+        d3 = d3.drop(columns=["type"], errors="ignore")
         st_ui.dataframe(
             d3,
             use_container_width=True,
@@ -307,10 +308,11 @@ def render():
                 },
             ),
         )
-        st_ui.markdown("`type=2` after min(volume, stake)")
+        st_ui.markdown("Step 3 - Capped mined volume after applying min(raw volume, on-chain stake)")
         d2c = data["d2_type2_capped"]
         if key_filter.strip() and "wallet" in d2c.columns:
             d2c = d2c[d2c["wallet"].astype(str).isin(filtered_coldkeys)]
+        d2c = d2c.drop(columns=["type"], errors="ignore")
         st_ui.dataframe(
             d2c,
             use_container_width=True,
@@ -323,7 +325,7 @@ def render():
                 },
             ),
         )
-        st_ui.markdown("Per-wallet totals → score2 denominator (validator: type-1 + capped type-2)")
+        st_ui.markdown("Step 4 - Per-wallet total score basis used for allocation normalization")
         wt = data["wallet_totals"]
         if key_filter.strip() and "wallet" in wt.columns:
             wt = wt[wt["wallet"].astype(str).isin(filtered_coldkeys)]
@@ -336,7 +338,8 @@ def render():
         raw2 = data["raw"][data["raw"]["type"] == 2]
         if key_filter.strip() and "wallet" in raw2.columns:
             raw2 = raw2[raw2["wallet"].astype(str).isin(filtered_coldkeys)]
-        st_ui.markdown("Raw IMM rows (`type=2` only)")
+        raw2 = raw2.drop(columns=["type"], errors="ignore")
+        st_ui.markdown("Reference - Raw IMM event rows behind this snapshot")
         st_ui.dataframe(
             raw2,
             use_container_width=True,
@@ -345,7 +348,7 @@ def render():
         )
 
     csv_bytes = alloc.to_csv(index=False).encode("utf-8")
-    st_ui.download_button("Download score2 allocations (CSV)", csv_bytes, file_name="score2_allocations.csv")
+    st_ui.download_button("Download score allocations (CSV)", csv_bytes, file_name="score_allocations.csv")
 
 
 if __name__ == "__main__":
