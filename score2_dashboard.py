@@ -46,7 +46,6 @@ _TOOLTIP_ALLOC = {
     "count": "Number of UIDs on this coldkey; divides per-UID score in validator logic.",
     "daily_reward": "Current miner daily reward from subnet metagraph (emission * EPOCHES_IN_DAY) in selected currency.",
     "total (score)": "IMM wallet total volume fed into simple score (type-1 + capped type-2 from IMM window); this is the score basis before ratio scaling and per-coldkey split.",
-    "score": "Simple score incentive weight for this miner after normalizing wallet totals (matches validator simple score path).",
 }
 _TOOLTIP_IMM_WALLET_ROW = {
     "wallet": "Coldkey (SS58) from IMM.",
@@ -345,8 +344,7 @@ def render():
     alloc = (
         filtered_scored_rows
         .sort_values(["score2", "uid"], ascending=[False, True], na_position="last")
-        .drop(columns=["score"], errors="ignore")
-        .rename(columns={"score2": "score"})
+        .drop(columns=["score", "score2"], errors="ignore")
         .rename(columns={"total": "total (score)"})
         .drop(columns=["index"], errors="ignore")
         .reset_index(drop=True)
